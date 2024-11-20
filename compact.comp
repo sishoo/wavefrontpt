@@ -1,0 +1,21 @@
+#version 450
+
+layout (local_size_x = 1, local_size_Y = 1, local_size_z = 1) in;
+
+layout (binding = 0) buffer l0
+{
+        ray_state ray_states[];
+};
+
+void main()
+{
+        uint j = 0;
+        for (uint i = 0; i < nrays_states_prev; i++)
+        {
+                // for each ray state move it down to compact it
+                if (ray_states[i].hit_id != -1)
+                {
+                        ray_states[j++] = ray_states[i];
+                }       
+        }      
+}

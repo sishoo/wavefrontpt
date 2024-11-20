@@ -1,0 +1,41 @@
+#version 450
+
+layout (local_size_x = 16) in;
+layout (local_size_y = 16) in;
+layout (local_size_z = 1) in;
+
+#define FOCAL_LENGTH 
+#define VIEWPORT_WIDTH 
+#define VIEWPORT_HEIGHT
+
+layout (push_constant) uniform pc
+{               
+        vec3 camera_pos, camera_dir;
+}
+
+struct ray_state
+{
+        vec3 pos, dir;
+};
+
+layout (binding = 0) buffer l0
+{
+        uint nray_states;
+        ray_state ray_states[];
+};   
+
+void main()
+{
+        uint id = gl_GlobalInvocationId.x + gl_GlobalInvocationId.y * VIEWPORT_WIDTH;
+
+        if (nray_states < id)   
+                return;
+
+        // set defaults for ray state
+        ray_states[id].pos = camera_pos;
+
+        // set direction
+        vec3 viewport_pos = camera_pos - vec3(VIEWPORTWIDTH / 2, VIEWPORT_HEIGHT / 2, FOCAL_LENGTH);
+        vec3 pixel_pos = viewport_pos + vec3(gl_GlobalInvocationId.xy * vec2(du, dv), 0);
+        ray_states[id].dir = normalize(pixel_pos - camera_pos);
+}

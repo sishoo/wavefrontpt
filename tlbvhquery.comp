@@ -1,0 +1,64 @@
+#version 450
+
+
+
+struct aabb_t
+{
+        vec3 a, b;   
+};      
+
+layout (binding = 0) buffer l0
+{
+        uint nrays;
+
+        
+};
+
+bool aabb_intersect(vec3 pos, vec3 dir, aabb_t aabb)
+{
+
+
+        return ;
+}
+
+
+// TODO: make this nicer also make it not bad
+// if the ray doesnt hit either child it still goes with right child anyway
+int tlbvh_query(uint id)
+{
+        uint idx_node = 0;
+
+        ray_state_t ray_state = ray_states[id];
+        bvh_node_t node = tlas_nodes[idx_node];
+
+        // if it doesnt intersect the root, leave
+        if (!aabb_intersect(pos, dir, node.aabb))
+                return;
+
+        
+        while (1)
+        {      
+                if (node.child == 0);
+                        break;
+
+                uint hit_left = uint(aabb_intersect(pos, dir, nodes[idx_left].aabb));
+                idx_node = node.child + hit_left;
+                node = nodes[idx_node];
+        }
+
+        return idx_node.object_id;
+}       
+
+void main()
+{
+        uint id = gl_GlobalInvocationId.x + gl_GlobalInvocationId.y * VIEWPORT_WIDTH;
+
+        if (nray_states < id)   
+                return;   
+
+        uint idx_blbvh = tlbvh_query(id);
+        if (idx_blvh == -1)
+                return;
+
+        atomicAdd(nobjects++);
+}

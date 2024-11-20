@@ -1,0 +1,56 @@
+#version 450
+
+layout (local_size_x = 1) in;
+layout (local_size_y = 1) in;
+layout (local_size_z = 1) in;
+
+layout (binding = 0) buffer l0
+{
+
+
+
+};
+
+vec3 blvh_query(uint bvh_id, uint ray_id)
+{       
+        
+}
+
+void main()
+{       
+        uint id = gl_GlobalInvocationId.x + gl_GlobalInvocationId.y * VIEWPORT_WIDTH;
+
+        if (nray_states < id)   
+                return;   
+
+        ivec3 idx_tri = blvh_query(blvhs[id], id);
+
+        if (idx_tri < 0)        
+                return;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                ivec3 idx_tri = ivec3(-1, -1, -1);
+
+        bvh_t bvh = blbvhs[bvh_id];
+ 
+ 
+        for (uint i = ; i < bvh.szmeshlet; i++)
+        {
+                vec3 
+        }
+
+
+        return idx_tri;
+}
