@@ -1,0 +1,22 @@
+#version 450
+
+
+
+layout (std430, binding = 0) buffer l0
+{
+        uint nrays;
+        ray_state ray_states[];
+};
+
+layout (binding = 1) writeonly image2D img;
+
+void main()
+{
+        uint id = gl_GlobalInvocationId.x;
+
+        if (nrays <= id)
+                return;
+
+        vec2 pos = ;
+        imageStore(img, vec4(ray_states[id].color, 1.0));
+}

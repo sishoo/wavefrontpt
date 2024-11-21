@@ -20,15 +20,16 @@ struct ray_state
 
 layout (binding = 0) buffer l0
 {
-        uint nray_states;
         ray_state ray_states[];
 };   
 
 void main()
 {
+
+        // TODO: finish
         uint id = gl_GlobalInvocationId.x + gl_GlobalInvocationId.y * VIEWPORT_WIDTH;
 
-        if (nray_states < id)   
+        if (nray_states <= id)   
                 return;
 
         // set defaults for ray state

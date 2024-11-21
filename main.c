@@ -1,42 +1,3 @@
-
-
-#include <stdbool.h>
-#include <stdint.h>
-#include <stdio.h>
-#include <stdlib.h>
-
-#define VOXEL_TYPE_HARD 0b00
-#define VOXEL_TYPE_SOFT 0b11
-#define VOXEL_TYPE_FLUCUATE1 0b10
-#define VOXEL_TYPE_FLUCUATE2 0b01
-
-#define wpt_SZPUSH_CONSTANTS sizeof(float[36])
-
-typedef struct
-{
-        float x, y, z;
-} vec3_t;
-
-typedef struct
-{
-        float mass;
-        vec3_t position, velocity, acceleration;
-} point_mass_t;
-
-typedef struct
-{
-        float k, rest_distance;
-} spring_t;
-
-typedef struct
-{
-        uint32_t npoint_masses, nsprings;
-        point_mass_t *ppoint_masses;
-        spring_t *psprings;
-} entity_t;
-
-#include "include/utils.h"
-
 #define SDL_MAIN_HANDLED
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_vulkan.h>
@@ -46,18 +7,10 @@ typedef struct
 #include <stdlib.h>
 #include <time.h>
 
-#define NFRAMES_IN_FLIGHT 2
-#define wpt_VK_TIMEOUT 9999999
-
-#define wpt_contextIMELINE_COMMANDS_COMPLETE_VALUE 2ULL
-#define wpt_contextIMELINE_FRAME_PRESENT_VALUE 3ULL
-#define wpt_SWAPCHAIN_IMAGE_FORMAT VK_FORMAT_R8G8B8A8_UNORM
-
-#define wpt_SZWORKGROUP_X 16
-#define wpt_SZWORKGROUP_Y 16
-#define wpt_SZWORKGROUP_Z 1
-
 #include "/Users/macfarrell/projects/ccpp/harpy/backend/hpyr_backend.h"
+#include "include/utils.h"
+
+#define NFRAME_IN_FLIGHT 2
 
 typedef struct
 {
@@ -116,7 +69,7 @@ void wpt_prepare(wpt_context *pr, )
                 map scene buffer
 
                 assemble bvhs in place in the mapped scene buffer
-        
+
 
         // sizeof scene buffer
         uint32_t szlights   = pr->nlights * sizeof(light_t);
@@ -181,7 +134,6 @@ void wpt_prepare(wpt_context *pr, )
         void *pmapped = NULL;
         VK_TRY(vkMapMemory(pr->ldevice, pr->scene_mem, 0, szscene_buf, 0));
         */
-
 }
 
 void wpt_init_common(wpt_context *pr)
@@ -294,7 +246,9 @@ void wpt_draw()
 {
         frame_info *pframe_info = pr->pframe_infos[nframe % NFRAMES_IN_FLIGHT];
         VkCommandBuffer cmd_buf = pframe_info->cmd_buf;
-        VkImage img = pframe_info->img;
+        VkImage img             = pframe_info->img;
+        VkSemaphore img_sema    = pframe_info->img_sema;
+        VkFence fence           = pframe_info->fence;
 
         hpyr_backend *pb = &pr->backend;
 
@@ -307,6 +261,9 @@ void wpt_draw()
                 .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
         };
         VK_TRY(vkBeginCommandBuffer(cmd_buf, &begin));
+
+        // get image, 1ms timeout
+        VkImage img = hpyr_backend_next_image(pr, 1000000, img_sema, VK_NULL_HANDLE);
 
         // set dynamic state
         VkViewport vport = {
@@ -322,15 +279,15 @@ void wpt_draw()
 
         // transition img to general
         hpyr_backend_cmd_simple_transition(
-                        pr, 
-                        cmd_buf, 
-                        img,
-                        VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, 
-                        VK_PIPELINE_STAGE_TRANSFER_BIT,
-                        VK_ACCESS_NONE_KHR,
-                        VK_ACCESS_TRANSFER_WRITE_BIT,
-                        VK_IMAGE_LAYOUT_UNDEFINED, 
-                        VK_IMAGE_LAYOUT_GENERAL);
+                pr,
+                cmd_buf,
+                img,
+                VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                VK_PIPELINE_STAGE_TRANSFER_BIT,
+                VK_ACCESS_NONE_KHR,
+                VK_ACCESS_TRANSFER_WRITE_BIT,
+                VK_IMAGE_LAYOUT_UNDEFINED,
+                VK_IMAGE_LAYOUT_GENERAL);
 
         // clear to black
         vkCmdClearColorImage(
@@ -353,11 +310,24 @@ void wpt_draw()
                 sizeof(VkDispatchIndirectCommand),
                 &(VkDispatchIndirectCommand) {ceil(pr->w / 16), ceil(pr->h / 16), 1});
 
+        // top level bvh query
         vkCmdBindPipeline(cmd_buf, VK_PIPELINE_BIND_POINT_COMPUTE, pr->tlbvhquery_pipe);
 
         vkCmdDispatch(cmd_buf, ceil(pr->height / 16), ceil(pr->height / 16), 1);
 
-        // TODO: memory barrier to protect the ray states from buffer write and pipeline
+        hpyr_backend_cmd_buffer_barrier(
+                pr,
+                cmd_buf,
+                pr->scene_buf,
+                VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                VK_DEPENDENCY_BY_REGION_BIT,
+                VK_ACCESS_SHADER_WRITE_BIT,
+                VK_ACCESS_SHADER_READ_BIT,
+                VK_QUEUE_FAMILY_IGNORED,
+                VK_QUEUE_FAMILY_IGNORED,
+                pr->ray_offset,
+                pr->szrays);
 
         uint32_t niters = pr->niters;
         while (niters--)
@@ -368,29 +338,70 @@ void wpt_draw()
 
                 vkCmdDispatchIndirect(cmd_buf, pr->scene_buf, pr->idx_dispatch_cmd);
 
-                // trace
+                // barrier
+                hpyr_backend_cmd_buffer_barrier(
+                        pr,
+                        cmd_buf,
+                        pr->scene_buf,
+                        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                        VK_DEPENDENCY_BY_REGION_BIT,
+                        VK_ACCESS_SHADER_WRITE_BIT,
+                        VK_ACCESS_SHADER_READ_BIT,
+                        VK_QUEUE_FAMILY_IGNORED,
+                        VK_QUEUE_FAMILY_IGNORED,
+                        pr->ray_offset,
+                        pr->szrays);
+
+                // bottom level bvh query
                 vkCmdBindPipeline(
                         cmd_buf, VK_PIPELINE_BIND_POINT_COMPUTE, pr->blbvhquery_pipe);
 
                 vkCmdDispatchIndirect(cmd_buf, pr->scene_buf, pr->idx_dispatch_cmd);
+
+                // barrier
+                hpyr_backend_cmd_buffer_barrier(
+                        pr,
+                        cmd_buf,
+                        pr->scene_buf,
+                        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                        VK_DEPENDENCY_BY_REGION_BIT,
+                        VK_ACCESS_SHADER_WRITE_BIT,
+                        VK_ACCESS_SHADER_READ_BIT,
+                        VK_QUEUE_FAMILY_IGNORED,
+                        VK_QUEUE_FAMILY_IGNORED,
+                        pr->ray_offset,
+                        pr->szrays);
         }
-
-        // TODO: final color evaluation
-
 
         // transition img to present src
         hpyr_backend_cmd_simple_transition(
-                        pr, 
-                        cmd_buf, 
-                        img,
-                        ,  // TODO: fill in???
-                        VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
-                        VK_ACCESS_NONE_KHR,
-                        0,
-                        VK_IMAGE_LAYOUT_GENERAL, 
-                        VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+                pr,
+                cmd_buf,
+                img,
+                VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+                VK_ACCESS_NONE_KHR,
+                0,
+                VK_IMAGE_LAYOUT_GENERAL,
+                VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
 
         VK_TRY(vkEndCommandBuffer(cmd_buf));
+
+        // submit and present
+        hpyr_backend_simple_submit(
+                pr,
+                HPYR_BACKEND_IDX_COMPUTE_QUEUE,
+                1,
+                &img_sema,
+                (VkPipelineStageFlags[]) {VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT},
+                1,
+                &cmd_sema,
+                VK_NULL_HANDLE);
+
+        hpyr_backend_simple_present(
+                pb, HPYR_BACKEND_IDX_COMPUTE_QUEUE, 1, &cmd_sema, idx_img);
 
         pr->nframe++;
 }

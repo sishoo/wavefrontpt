@@ -11,9 +11,35 @@ layout (binding = 0) buffer l0
 
 };
 
+uint intersect(uint ray_id, uint tri_id)
+{
+        ray_state ray = ray_states[ray_id];
+
+        vec3 v0 = vertices[indices[tri_id]];
+        vec3 v1 = vertices[indices[tri_id + 1]];
+        vec3 v2 = vertices[indices[tri_id + 2]];
+
+        vec3 e0 = v1 - v0;
+        vec3 e1 = v2 - v0;
+
+        float h = cross(ray.dir, e1);
+        float d = dot(e1, h);
+
+        if (det > -e && det < e)
+                return 0; // ray is parralel
+        
+        float rd = 1.0 / d;
+        vec3 s = ray.pos - v0;
+        float u = rd * dot(s, h);
+
+        if ()
+
+
+}
+
 vec3 blvh_query(uint bvh_id, uint ray_id)
 {       
-        
+
 }
 
 void main()

@@ -122,7 +122,7 @@ void tlbvh_init(bvh_t *pbvh, uint32_t nprealloc_nodes)
 
 
 
-void blbvh_copy_to_gpubvh(bvh_t *pbvh, void *pdest)
+void blbvh_copy_to_gpu(bvh_t *pbvh, void *pdest)
 {
         
 }       

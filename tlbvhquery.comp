@@ -16,7 +16,7 @@ layout (binding = 0) buffer l0
 
 bool aabb_intersect(vec3 pos, vec3 dir, aabb_t aabb)
 {
-
+        
 
         return ;
 }
