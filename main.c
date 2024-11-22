@@ -7,15 +7,16 @@
 #include <stdlib.h>
 #include <time.h>
 
-#include "/Users/macfarrell/projects/ccpp/harpy/backend/hpyr_backend.h"
-#include "include/utils.h"
+#include "hpyr_backend.h"
 
-#define NFRAME_IN_FLIGHT 2
+#define NFRAMES_IN_FLIGHT 2
+#define NPIPES
+#define SZPUSH_CONSTANTS 256 // TODO: dont just define it as the max size
 
 typedef struct
 {
         VkFence fence;
-        VkSemaphore time_sema, img_sema;
+        VkSemaphore cmd_sema, img_sema;
         VkCommandBuffer cmd_buf;
 } frame_info;
 
@@ -24,42 +25,41 @@ typedef struct
         // makes pr == &pr->backend, dont move
         hpyr_backend backend;
 
-        uint64_t nframe;
+        uint64_t nframe, niters;
 
+        // pipes
         VkPipelineLayout pipe_layout;
-        VkPipeline raygen_pipe, tlbvh_pipe, blbvh_pipe;
+        VkPipeline raygen_pipe, tlbvh_pipe,
+                blbvh_pipe; // TODO: remove this and replace with array
+        VkPipeline ppipes[NPIPES];
 
+        // descriptors
         VkDescriptorSetLayout set_layout;
         VkDescriptorSet scene_desc;
 
         uint32_t npaths, cap_paths, szpaths;
         char *ppaths;
 
-        uint32_t niters;
-
+        // scene buffer
         VkDeviceMemory scene_mem;
         VkBuffer scene_buf;
-        uint32_t idx_rays, idx_geometry, idx_draw, idx_ndraw, idx_object, idx_light;
+        uint32_t idx_rays, idx_geometry, idx_draw, idx_ndraw, idx_object,
+                idx_light, idx_dispatch_cmd;
 
         VkCommandPool cmd_pool;
         VkCommandBuffer cmd_buf;
 
-        frame_info_t pframe_infos[NFRAMES_IN_FLIGHT];
+        frame_info pframe_infos[NFRAMES_IN_FLIGHT];
+
+
+        uint32_t w, h;
 
         float dt;
         // TODO: maybe remove this and just generate on the fly
         float proj_mat[16], view_mat[16];
 } wpt_context;
 
-bool wpt_load_mesh(wpt_context *pr, char *ppath)
-{
-        if (szpath + pr->szpaths)
-                pr->ppaths = realloc(pr->ppaths, pr->cap_paths);
-
-        strncpy(pr->ppaths + sz_paths, ppath, szpath);
-}
-
-void wpt_prepare(wpt_context *pr, )
+void wpt_prepare(wpt_context *pr)
 {
 
         /*
@@ -74,8 +74,8 @@ void wpt_prepare(wpt_context *pr, )
         // sizeof scene buffer
         uint32_t szlights   = pr->nlights * sizeof(light_t);
         uint32_t szobects   = pr->nobjects * sizeof(object_t);
-        uint32_t szdraw     = pr->nobjects * sizeof(VkDrawIndexedIndirectCommand);
-        uint32_t szgeometry = 0;
+        uint32_t szdraw     = pr->nobjects *
+        sizeof(VkDrawIndexedIndirectCommand); uint32_t szgeometry = 0;
 
         for (uint32_t i = 0; i < pr->npaths; i++)
         {
@@ -119,16 +119,18 @@ void wpt_prepare(wpt_context *pr, )
                 .sharingMode           = VK_SHARING_MODE_CONCURRENT,
                 .queueFamilyIndexCount = 2,
                 .pQueueFamilyIndices =
-                        (uint32_t[]) {pr->idx_compute_queue, pr->idx_transfer_queue}};
-        VK_TRY(vkCreateBuffer(pr->ldevice, &buf_info, NULL, &pr->scene_buf));
+                        (uint32_t[]) {pr->idx_compute_queue,
+        pr->idx_transfer_queue}}; VK_TRY(vkCreateBuffer(pr->ldevice, &buf_info,
+        NULL, &pr->scene_buf));
 
         // alloc scene buffer
         VkMemoryAllocateInfo alloc_info = {
                 .sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
                 .allocationSize  =,
                 .memoryTypeIndex = };
-        VK_TRY(vkAllocateMemory(pr->ldevice, &alloc_info, NULL, &pr->scene_mem));
-        VK_TRY(vkBindBufferMemory(pr->ldevice, pr->scene_buf, pr->scene_mem, 0));
+        VK_TRY(vkAllocateMemory(pr->ldevice, &alloc_info, NULL,
+        &pr->scene_mem)); VK_TRY(vkBindBufferMemory(pr->ldevice, pr->scene_buf,
+        pr->scene_mem, 0));
 
         // map scene buf
         void *pmapped = NULL;
@@ -138,116 +140,117 @@ void wpt_prepare(wpt_context *pr, )
 
 void wpt_init_common(wpt_context *pr)
 {
+        // descriptor set layout
         VkDescriptorSetLayoutBinding binding = {
                 .binding         = 0,
                 .descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                 .descriptorCount = 1,
-                .stageFlags      = VK_SHADER_STAGE_ALL};
-
-        VkDescriptorSetLayoutCreateInfo set_layout_info = {
-                .sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-                .bindingCount = 1,
-                .pBindings    = &binding};
-
-        VK_TRY(vkCreateDescriptorSetLayout(
-                pr->ldevice, &set_layout_info, NULL, &pr->set_layout));
-
-        VkPipelineLayoutCreateInfo pipe_layout_info = {
-                .sType                  = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-                .setLayoutCount         = 1,
-                .pSetLayouts            = &pr->set_layout,
-                .pushConstantRangeCount = 1,
-                .pPushConstantRanges    = &(VkPushConstantRange) {
-                           .stageFlags = VK_SHADER_STAGE_VERTEX_BIT |
-                                      VK_SHADER_STAGE_FRAGMENT_BIT |
-                                      VK_SHADER_STAGE_COMPUTE_BIT,
-                           .offset = 0,
-                           .size   = wpt_SZPUSH_CONSTANTS}};
-
-        VK_TRY(vkCreatePipelineLayout(
-                pr->ldevice, &pipe_layout_info, NULL, &pr->pipe_layout));
-}
-
-/*
-void wpt_init_compute_pipes(wpt_context *pr)
-{
-        static uint32_t pphysics_spv[] = {
-#include "shader/spv/physics.comp.spv"
+                .stageFlags      = VK_SHADER_STAGE_ALL
         };
 
-        VkShaderModule physics_module =
-                init_shader_module(pphysics_spv, sizeof pphysics_spv);
+        VkDescriptorSetLayoutCreateInfo set_info = {
+                .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+                .bindingCount = 1,
+                .pBindings    = &binding
+        };
 
-        VkPipelineShaderStageCreateInfo physics_shader_info = {
-                .sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-                .stage  = VK_SHADER_STAGE_COMPUTE_BIT,
-                .module = physics_module,
-                .pname  = "main"};
+        hpyr_backend_create_descriptor_set_layout(
+                (hpyr_backend *) pr, &pr->set_layout, &set_info
+        );
 
-        VkPipelineInfo pipe_info = {
-                .sType  = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
-                .stage  = physics_shader_info,
-                .layout = pr->pipe_layout};
+        // pipeline layout
+        VkPipelineLayoutCreateInfo pipe_info = {
+                .sType          = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+                .setLayoutCount = 1,
+                .pSetLayouts    = &pr->set_layout,
+                .pushConstantRangeCount = 1,
+                .pPushConstantRanges    = &(VkPushConstantRange
+                ){.stageFlags = VK_SHADER_STAGE_VERTEX_BIT |
+                                   VK_SHADER_STAGE_FRAGMENT_BIT |
+                                   VK_SHADER_STAGE_COMPUTE_BIT,
+                     .offset = 0,
+                     .size   = SZPUSH_CONSTANTS}
+        };
 
-        VK_TRY(vkCreateComputePipelines(
-                pr->ldevice,
-                VK_NULL_HANDLE,
-                2,
-                pipeline_infos,
-                NULL,
-                &pr->physics_pipe));
+        hpyr_backend_create_pipeline_layout((hpyr_backend *) pr, &pr->pipe_layout, &pipe_info);
 }
-*/
 
-void wpt_init_frame_infos(wpt_context *pr)
+void wpt_init_compute_pipes(wpt_context *pr)
 {
-        VK_TRY(vkCreateCommandPool(
-                pr->ldevice,
-                &(VkCommandPoolCreateInfo) {
-                        .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
-                        .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
-                        .queueFamilyIndex = pr->idx_qfam},
-                NULL,
-                &pr->cmd_pool));
+        // TODO: populate this
+        char *ppaths[] = {
+                "",
 
-        for (uint32_t i = 0; i < NFRAMES_IN_FLIGHT; i++)
+        };
+
+        for (uint32_t i = 0; i < sizeof ppaths; i++)
         {
-                frame_info_t *pframe_info = &pr->pframe_infos[i];
+                FILE *pfile = fopen(ppaths[i], "rb");
+                if (!pfile)
+                {
+                        fprintf(stderr, "Cant open: %s\n", ppaths[i]);
+                        abort();
+                }
 
-                hpyr_backend_create_semaphore(pr, &pframe_info->img_sema, 0, 0);
-                hpyr_backend_create_semaphore(
-                        pr,
-                        &pframe_info->time_sema,
-                        wpt_contextIMELINE_COMMANDS_COMPLETE_VALUE,
-                        1);
+                uint64_t sz = fseek(pfile, 0, SEEK_END);
+                rewind(pfile);
 
-                hpyr_backend_create_command_buffers(
-                        pr,
-                        &pframe_info->cmd_buf,
-                        1,
-                        VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-                        HPYR_BACKEND_IDX_COMPUTE_QUEUE);
+                uint32_t *pcode = malloc(sz); // whatever
+                fwrite(pcode, sz, 1, pfile);
+
+                VkShaderModule mod =
+                        hpyr_backend_create_shader_module((hpyr_backend *) pr, pcode, sz);
+
+                hpyr_backend_create_compute_pipe(
+                        pr, &pr->ppipes[i], pr->pipe_layout, mod
+                );
+
+                free(pcode);
         }
 }
 
-void wpt_init(wpt_context *pr, char *pname, int width, int height, uint32_t niters)
+void wpt_init_frame_infos(wpt_context *pr)
 {
-        pr->nframe = 1;
+        for (uint32_t i = 0; i < NFRAMES_IN_FLIGHT; i++)
+        {
+                frame_info *pframe_info = &pr->pframe_infos[i];
+
+                hpyr_backend_create_semaphore(pr, &pframe_info->img_sema, 0, 0);
+                hpyr_backend_create_semaphore(pr, &pframe_info->cmd_sema, 0, 0);
+
+                hpyr_backend_create_command_buffers(
+                        (hpyr_backend *) pr,
+                        &pframe_info->cmd_buf,
+                        1,
+                        VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+                        HPYR_BACKEND_IDX_COMPUTE_QUEUE
+                );
+        }
+}
+
+void wpt_init(
+        wpt_context *pr, char *pname, int width, int height, uint32_t niters)
+{
+        pr->nframe = 1; // TODO: fix this crap and the starting frames stuff 
         pr->niters = niters;
 
         hpyr_backend_init(pr, pname, width, height);
+
+        pr->w = pr->backend.w;
+        pr->h = pr->backend.h;
+
         wpt_init_common(pr);
         wpt_init_graphics_pipes(pr);
         // wpt_init_compute_pipes(pr);
         wpt_init_frame_infos(pr);
 }
 
-void wpt_draw()
+void wpt_draw(wpt_context *pr)
 {
-        frame_info *pframe_info = pr->pframe_infos[nframe % NFRAMES_IN_FLIGHT];
+        frame_info *pframe_info = &pr->pframe_infos[pr->nframe % NFRAMES_IN_FLIGHT];
         VkCommandBuffer cmd_buf = pframe_info->cmd_buf;
-        VkImage img             = pframe_info->img;
         VkSemaphore img_sema    = pframe_info->img_sema;
+        VkSemaphore cmd_sema    = pframe_info->cmd_sema;
         VkFence fence           = pframe_info->fence;
 
         hpyr_backend *pb = &pr->backend;
@@ -263,23 +266,27 @@ void wpt_draw()
         VK_TRY(vkBeginCommandBuffer(cmd_buf, &begin));
 
         // get image, 1ms timeout
-        VkImage img = hpyr_backend_next_image(pr, 1000000, img_sema, VK_NULL_HANDLE);
+        VkImage img =
+                hpyr_backend_next_image(pr, 1000000, img_sema, VK_NULL_HANDLE);
 
         // set dynamic state
         VkViewport vport = {
                 .x        = 0,
                 .y        = 0,
-                .width    = pr->width,
-                .height   = pr->height,
+                .width    = pr->w,
+                .height   = pr->h,
                 .minDepth = 0.0f,
-                .maxDepth = 1.0f};
+                .maxDepth = 1.0f
+        };
         vkCmdSetViewport(cmd_buf, 0, 1, &vport);
 
-        vkCmdSetScissor(cmd_buf, 0, 1, &(VkRect2D) {.extent = {pr->width, pr->height}});
+        vkCmdSetScissor(
+                cmd_buf, 0, 1, &(VkRect2D){.extent = {pr->w, pr->h}}
+        );
 
         // transition img to general
         hpyr_backend_cmd_simple_transition(
-                pr,
+                (hpyr_backend *) pr,
                 cmd_buf,
                 img,
                 VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
@@ -287,19 +294,16 @@ void wpt_draw()
                 VK_ACCESS_NONE_KHR,
                 VK_ACCESS_TRANSFER_WRITE_BIT,
                 VK_IMAGE_LAYOUT_UNDEFINED,
-                VK_IMAGE_LAYOUT_GENERAL);
+                VK_IMAGE_LAYOUT_GENERAL
+        );
 
         // clear to black
-        vkCmdClearColorImage(
-                cmd_buf,
-                img,
-                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                &(VkClearColorValue) {},
-                1,
-                &whole_img);
+        hpyr_backend_cmd_clear_whole_image(pr, cmd_buf, img, VK_IMAGE_LAYOUT_GENERAL, &(VkClearColorValue){});
 
         // primary ray gen
-        vkCmdBindPipeline(cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, pr->raygen_pipe);
+        vkCmdBindPipeline(
+                cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, pr->raygen_pipe
+        );
         vkCmdDispatch(cmd_buf, ceil(pr->w / 16), ceil(pr->h / 16), 1);
 
         // update the buf with the correct nrays for the compact pipe
@@ -308,13 +312,18 @@ void wpt_draw()
                 pr->scene_buf,
                 pr->idx_dispatch_cmd,
                 sizeof(VkDispatchIndirectCommand),
-                &(VkDispatchIndirectCommand) {ceil(pr->w / 16), ceil(pr->h / 16), 1});
+                &(VkDispatchIndirectCommand
+                ){ceil(pr->w / 16), ceil(pr->h / 16), 1}
+        );
 
         // top level bvh query
-        vkCmdBindPipeline(cmd_buf, VK_PIPELINE_BIND_POINT_COMPUTE, pr->tlbvhquery_pipe);
+        vkCmdBindPipeline(
+                cmd_buf, VK_PIPELINE_BIND_POINT_COMPUTE, pr->tlbvh_pipe
+        );
 
-        vkCmdDispatch(cmd_buf, ceil(pr->height / 16), ceil(pr->height / 16), 1);
+        vkCmdDispatch(cmd_buf, ceil(pr->w / 16), ceil(pr->h / 16), 1);
 
+        // ray buffer barrier
         hpyr_backend_cmd_buffer_barrier(
                 pr,
                 cmd_buf,
@@ -327,18 +336,24 @@ void wpt_draw()
                 VK_QUEUE_FAMILY_IGNORED,
                 VK_QUEUE_FAMILY_IGNORED,
                 pr->ray_offset,
-                pr->szrays);
+                pr->szrays
+        );
 
         uint32_t niters = pr->niters;
         while (niters--)
         {
                 // compact
                 vkCmdBindPipeline(
-                        cmd_buf, VK_PIPELINE_BIND_POINT_COMPUTE, pr->compact_pipe);
+                        cmd_buf,
+                        VK_PIPELINE_BIND_POINT_COMPUTE,
+                        pr->compact_pipe
+                );
 
-                vkCmdDispatchIndirect(cmd_buf, pr->scene_buf, pr->idx_dispatch_cmd);
+                vkCmdDispatchIndirect(
+                        cmd_buf, pr->scene_buf, pr->idx_dispatch_cmd
+                );
 
-                // barrier
+                // ray buffer barrier
                 hpyr_backend_cmd_buffer_barrier(
                         pr,
                         cmd_buf,
@@ -351,15 +366,21 @@ void wpt_draw()
                         VK_QUEUE_FAMILY_IGNORED,
                         VK_QUEUE_FAMILY_IGNORED,
                         pr->ray_offset,
-                        pr->szrays);
+                        pr->szrays
+                );
 
                 // bottom level bvh query
                 vkCmdBindPipeline(
-                        cmd_buf, VK_PIPELINE_BIND_POINT_COMPUTE, pr->blbvhquery_pipe);
+                        cmd_buf,
+                        VK_PIPELINE_BIND_POINT_COMPUTE,
+                        pr->blbvh_pipe
+                );
 
-                vkCmdDispatchIndirect(cmd_buf, pr->scene_buf, pr->idx_dispatch_cmd);
+                vkCmdDispatchIndirect(
+                        cmd_buf, pr->scene_buf, pr->idx_dispatch_cmd
+                );
 
-                // barrier
+                // ray buffer barrier
                 hpyr_backend_cmd_buffer_barrier(
                         pr,
                         cmd_buf,
@@ -372,12 +393,13 @@ void wpt_draw()
                         VK_QUEUE_FAMILY_IGNORED,
                         VK_QUEUE_FAMILY_IGNORED,
                         pr->ray_offset,
-                        pr->szrays);
+                        pr->szrays
+                );
         }
 
         // transition img to present src
         hpyr_backend_cmd_simple_transition(
-                pr,
+                (hpyr_backend *) pr,
                 cmd_buf,
                 img,
                 VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
@@ -385,23 +407,27 @@ void wpt_draw()
                 VK_ACCESS_NONE_KHR,
                 0,
                 VK_IMAGE_LAYOUT_GENERAL,
-                VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+                VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
+        );
 
         VK_TRY(vkEndCommandBuffer(cmd_buf));
 
         // submit and present
         hpyr_backend_simple_submit(
-                pr,
+                (hpyr_backend *) pr,
+                cmd_buf, 
                 HPYR_BACKEND_IDX_COMPUTE_QUEUE,
                 1,
                 &img_sema,
-                (VkPipelineStageFlags[]) {VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT},
+                (VkPipelineStageFlags[]){VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT},
                 1,
                 &cmd_sema,
-                VK_NULL_HANDLE);
+                VK_NULL_HANDLE
+        );
 
         hpyr_backend_simple_present(
-                pb, HPYR_BACKEND_IDX_COMPUTE_QUEUE, 1, &cmd_sema, idx_img);
+                pb, HPYR_BACKEND_IDX_COMPUTE_QUEUE, 1, &cmd_sema, img
+        );
 
         pr->nframe++;
 }
@@ -410,13 +436,8 @@ int main()
 {
         srand(time(NULL));
         wpt_context wpt = {};
-        wpt_init(&wpt, "HELLO BRO", 800, 600);
+        wpt_init(&wpt, "HELLO BRO", 800, 600, 10);
 
-        uint32_t n = 2;
-        while (1)
-        {
-                wpt_contextest2_draw(&wpt);
-        }
-
+       
         return 0;
 }
